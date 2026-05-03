@@ -63,6 +63,44 @@ require_cmd(){
   fi
 }
 
+ensure_docker() {
+    if command -v docker >/dev/null 2>&1; then
+        log "Docker already installed: $(docker --version 2>/dev/null || true)"
+        return 0
+    fi
+
+    log "Docker is not installed. Trying to install Docker."
+
+    apt-get update
+
+    if apt-cache policy docker-ce 2>/dev/null | grep -q "Candidate:" && \
+       ! apt-cache policy docker-ce 2>/dev/null | grep -q "Candidate: (none)"; then
+        log "Installing Docker from Docker CE repository"
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io \
+            docker-buildx-plugin \
+            docker-compose-plugin
+
+        return 0
+    fi
+
+    warn "Docker CE repository is not available. Falling back to Ubuntu docker.io."
+
+    if dpkg -l | awk '{print $2}' | grep -qx 'containerd.io'; then
+        err "containerd.io is installed, but Docker CE repository is not available."
+        err "Installing Ubuntu docker.io would conflict with containerd.io."
+        err "Install Docker CE repository first or install docker manually."
+        return 1
+    fi
+
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        docker.io \
+        docker-compose-plugin
+}
+
 detect_script_dir(){
   local source="${BASH_SOURCE[0]}" dir=""
   if [[ -e "$source" ]]; then
