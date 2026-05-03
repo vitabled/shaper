@@ -6,6 +6,7 @@ Wants=network-online.target docker.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/remna-node-quota
+Environment=PYTHONPATH=/opt/remna-node-quota
 ExecStartPre=/opt/remna-node-quota/venv/bin/python -m remna_node_quota -c /etc/remna-node-quota/config.json --prepare-container
 ExecStart=/opt/remna-node-quota/venv/bin/python -m remna_node_quota -c /etc/remna-node-quota/config.json
 Restart=always
