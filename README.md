@@ -74,7 +74,7 @@ xray api statsquery --server=127.0.0.1:10085 -pattern "user>>>"
 Replace `YOUR_GITHUB_USER` and `YOUR_REPO` with your repository.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/vitabled/shaper/main/install.sh)
 ```
 
 Or clone manually:
