@@ -86,7 +86,7 @@ require_cmd() {
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log "Installing missing package: $pkg"
         apt-get update
-        apt-get install -y "$pkg"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"
     fi
 }
 
@@ -103,6 +103,7 @@ detect_script_dir() {
 
 self_bootstrap_if_needed() {
     local script_dir="$1"
+    shift || true
 
     if [[ -f "${script_dir}/requirements.txt" && -d "${script_dir}/remna_node_quota" ]]; then
         return 0
@@ -124,17 +125,114 @@ self_bootstrap_if_needed() {
     exec bash ./install.sh "$@"
 }
 
+ensure_ufw_ipsets() {
+    log "Checking UFW ipset dependencies"
+
+    if [[ ! -d /etc/ufw ]]; then
+        warn "/etc/ufw not found. Skipping UFW ipset check."
+        return 0
+    fi
+
+    if ! grep -Rqs -- '--match-set' /etc/ufw/*.rules 2>/dev/null; then
+        log "No ipset references found in /etc/ufw/*.rules"
+        return 0
+    fi
+
+    require_cmd ipset ipset
+
+    local backup_dir
+    backup_dir="/root/${APP_NAME}-ufw-ipset-backup-$(date +%F_%H-%M-%S)"
+    mkdir -p "$backup_dir"
+
+    cp -a /etc/ufw "$backup_dir/ufw" 2>/dev/null || true
+    ipset save > "$backup_dir/ipset.save" 2>/dev/null || true
+
+    log "Backup created: $backup_dir"
+
+    local rules_file
+    local family
+    local set_names
+    local set_name
+
+    for rules_file in /etc/ufw/*.rules; do
+        [[ -f "$rules_file" ]] || continue
+
+        if ! grep -qs -- '--match-set' "$rules_file"; then
+            continue
+        fi
+
+        case "$(basename "$rules_file")" in
+            *6.rules)
+                family="inet6"
+                ;;
+            *)
+                family="inet"
+                ;;
+        esac
+
+        set_names="$(
+            grep -hoE -- '--match-set[[:space:]]+[A-Za-z0-9_.:-]+' "$rules_file" 2>/dev/null \
+            | awk '{print $2}' \
+            | sort -u
+        )"
+
+        [[ -n "$set_names" ]] || continue
+
+        while IFS= read -r set_name; do
+            [[ -n "$set_name" ]] || continue
+
+            if ipset list "$set_name" >/dev/null 2>&1; then
+                log "ipset exists, keeping unchanged: $set_name"
+                continue
+            fi
+
+            log "Creating missing ipset: $set_name, family=$family"
+
+            if ! ipset create "$set_name" hash:net family "$family" hashsize 1024 maxelem 100000 -exist; then
+                warn "Failed to create ipset $set_name with family=$family"
+                warn "Continuing without deleting or modifying existing firewall rules."
+            fi
+        done <<< "$set_names"
+    done
+
+    mkdir -p /etc/iptables 2>/dev/null || true
+    ipset save > /etc/iptables/ipsets 2>/dev/null || true
+
+    if command -v ufw >/dev/null 2>&1; then
+        log "Testing UFW rules with existing configuration"
+
+        if ufw status 2>/dev/null | grep -qi "Status: active"; then
+            if ufw --force reload; then
+                log "UFW reload successful"
+            else
+                warn "UFW reload failed even after creating missing ipsets."
+                warn "Check backup: $backup_dir"
+                warn "Run manually: grep -Rni -- '--match-set' /etc/ufw"
+            fi
+        else
+            log "UFW is not active. Skipping reload."
+        fi
+    fi
+
+    log "UFW ipset check completed. Existing sets were not deleted."
+}
+
 install_os_dependencies() {
     log "Installing OS dependencies"
 
+    ensure_ufw_ipsets
+
     apt-get update
-    apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
         python3 \
         python3-venv \
         python3-pip \
         curl \
         ca-certificates \
-        jq
+        jq \
+        ipset
+
+    ensure_ufw_ipsets
 }
 
 write_config() {
@@ -206,13 +304,16 @@ config_file = sys.argv[1]
 def split_csv(value):
     return [x.strip() for x in value.split(",") if x.strip()]
 
+def parse_bool(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
 config = {
     "xray_bin": ${xray_bin@Q},
     "xray_api_server": ${xray_api_server@Q},
     "poll_interval_sec": int(${poll_interval@Q}),
     "db_path": "/var/lib/remna-node-quota/quota.db",
     "period": ${period@Q},
-    "dry_run": ${dry_run},
+    "dry_run": parse_bool(${dry_run@Q}),
     "inbound_tags": split_csv(${inbound_tags_raw@Q}),
     "remnawave": {
         "enabled": True,
@@ -222,7 +323,7 @@ config = {
         "page_limit": 100,
         "refresh_interval_sec": int(${refresh_interval@Q}),
         "timeout_sec": 20,
-        "verify_tls": ${verify_tls},
+        "verify_tls": parse_bool(${verify_tls@Q}),
         "status_allowlist": split_csv(${status_allowlist_raw@Q}),
         "id_fields": [
             "uuid",
@@ -264,6 +365,8 @@ install_app_files() {
 
     mkdir -p "$APP_DIR"
     mkdir -p "$DATA_DIR"
+
+    require_cmd rsync rsync
 
     rsync -a \
         --delete \
@@ -332,6 +435,10 @@ Useful commands:
   Restart:
     systemctl restart ${APP_NAME}
 
+  Check UFW ipsets:
+    ipset list -name
+    grep -Rni -- '--match-set' /etc/ufw
+
 Important:
   First run is recommended with dry_run=true.
   When logs show correct users and limits, set dry_run=false and restart service.
@@ -345,9 +452,9 @@ main() {
 
     self_bootstrap_if_needed "$script_dir" "$@"
 
-    install_os_dependencies
+    ensure_ufw_ipsets
 
-    require_cmd rsync rsync
+    install_os_dependencies
 
     install_app_files "$script_dir"
 
