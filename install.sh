@@ -36,19 +36,22 @@ ask() {
 
     if [[ -n "$default" ]]; then
         read -r -p "$prompt [$default]: " value
-        echo "${value:-$default}"
+        value="${value:-$default}"
     else
         read -r -p "$prompt: " value
-        echo "$value"
     fi
+
+    value="$(printf '%s' "$value" | tr -d '\r')"
+    printf '%s' "$value"
 }
 
 ask_secret() {
     local prompt="$1"
     local value=""
     read -r -s -p "$prompt: " value
-    echo
-    echo "$value"
+    echo >&2
+    value="$(printf '%s' "$value" | tr -d '\r\n')"
+    printf '%s' "$value"
 }
 
 ask_yes_no() {
@@ -230,7 +233,8 @@ install_os_dependencies() {
         curl \
         ca-certificates \
         jq \
-        ipset
+        ipset \
+        rsync
 
     ensure_ufw_ipsets
 }
@@ -285,21 +289,38 @@ write_config() {
     status_allowlist_raw="$(ask "Allowed user statuses, comma-separated" "ACTIVE")"
     default_limit_gb="$(ask "Default per-node limit in GB if user limit is missing, 0 means disabled" "0")"
 
-    default_limit_bytes="$(python3 - <<PY
+    default_limit_bytes="$(
+        DEFAULT_LIMIT_GB="$default_limit_gb" python3 <<'PY'
 from decimal import Decimal
-gb = Decimal("${default_limit_gb}")
+import os
+
+gb = Decimal(os.environ["DEFAULT_LIMIT_GB"])
 print(int(gb * Decimal(1024) * Decimal(1024) * Decimal(1024)))
 PY
-)"
+    )"
 
     mkdir -p "$CONFIG_DIR"
     chmod 700 "$CONFIG_DIR"
 
-    python3 - "$config_file" <<PY
+    CONFIG_FILE="$config_file" \
+    XRAY_BIN="$xray_bin" \
+    XRAY_API_SERVER="$xray_api_server" \
+    POLL_INTERVAL="$poll_interval" \
+    PERIOD="$period" \
+    DRY_RUN="$dry_run" \
+    INBOUND_TAGS_RAW="$inbound_tags_raw" \
+    PANEL_URL="$panel_url" \
+    PANEL_TOKEN="$panel_token" \
+    USERS_ENDPOINT="$users_endpoint" \
+    REFRESH_INTERVAL="$refresh_interval" \
+    VERIFY_TLS="$verify_tls" \
+    STATUS_ALLOWLIST_RAW="$status_allowlist_raw" \
+    DEFAULT_LIMIT_BYTES="$default_limit_bytes" \
+    python3 <<'PY'
 import json
-import sys
+import os
 
-config_file = sys.argv[1]
+config_file = os.environ["CONFIG_FILE"]
 
 def split_csv(value):
     return [x.strip() for x in value.split(",") if x.strip()]
@@ -308,23 +329,23 @@ def parse_bool(value):
     return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
 
 config = {
-    "xray_bin": ${xray_bin@Q},
-    "xray_api_server": ${xray_api_server@Q},
-    "poll_interval_sec": int(${poll_interval@Q}),
+    "xray_bin": os.environ["XRAY_BIN"],
+    "xray_api_server": os.environ["XRAY_API_SERVER"],
+    "poll_interval_sec": int(os.environ["POLL_INTERVAL"]),
     "db_path": "/var/lib/remna-node-quota/quota.db",
-    "period": ${period@Q},
-    "dry_run": parse_bool(${dry_run@Q}),
-    "inbound_tags": split_csv(${inbound_tags_raw@Q}),
+    "period": os.environ["PERIOD"],
+    "dry_run": parse_bool(os.environ["DRY_RUN"]),
+    "inbound_tags": split_csv(os.environ["INBOUND_TAGS_RAW"]),
     "remnawave": {
         "enabled": True,
-        "base_url": ${panel_url@Q},
-        "token": ${panel_token@Q},
-        "users_endpoint": ${users_endpoint@Q},
+        "base_url": os.environ["PANEL_URL"],
+        "token": os.environ["PANEL_TOKEN"].strip(),
+        "users_endpoint": os.environ["USERS_ENDPOINT"],
         "page_limit": 100,
-        "refresh_interval_sec": int(${refresh_interval@Q}),
+        "refresh_interval_sec": int(os.environ["REFRESH_INTERVAL"]),
         "timeout_sec": 20,
-        "verify_tls": parse_bool(${verify_tls@Q}),
-        "status_allowlist": split_csv(${status_allowlist_raw@Q}),
+        "verify_tls": parse_bool(os.environ["VERIFY_TLS"]),
+        "status_allowlist": split_csv(os.environ["STATUS_ALLOWLIST_RAW"]),
         "id_fields": [
             "uuid",
             "shortUuid",
@@ -340,16 +361,16 @@ config = {
             "dataLimit"
         ],
         "limit_multiplier": 1.0,
-        "default_limit_bytes": int(${default_limit_bytes@Q}),
+        "default_limit_bytes": int(os.environ["DEFAULT_LIMIT_BYTES"]),
         "fallback_to_local_users": False
     },
-    "default_limit_bytes": int(${default_limit_bytes@Q}),
+    "default_limit_bytes": int(os.environ["DEFAULT_LIMIT_BYTES"]),
     "users": {}
 }
 
 with open(config_file, "w", encoding="utf-8") as f:
     json.dump(config, f, ensure_ascii=False, indent=2)
-    f.write("\\n")
+    f.write("\n")
 PY
 
     chmod 600 "$config_file"
@@ -434,6 +455,19 @@ Useful commands:
 
   Restart:
     systemctl restart ${APP_NAME}
+
+  Check config JSON:
+    python3 -m json.tool ${CONFIG_DIR}/config.json >/dev/null && echo OK
+
+  Check token without printing it:
+    python3 - <<'PY'
+import json
+c=json.load(open("${CONFIG_DIR}/config.json"))
+t=c["remnawave"]["token"]
+print("token length:", len(t))
+print("starts with:", t[:10])
+print("contains newline:", "\\n" in t)
+PY
 
   Check UFW ipsets:
     ipset list -name
