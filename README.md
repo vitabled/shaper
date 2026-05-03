@@ -1,229 +1,77 @@
-# remna-node-quota
+# remna-node-quota / shaper
 
-`remna-node-quota` is a Linux daemon for **per-node traffic limits** on Remnawave/Xray nodes.
+Per-node traffic quota limiter for Remnawave/Remnanode.
 
-It does **not** bind a quota to a client IP address. It reads Xray user statistics like:
+It limits traffic by Xray user identifier, not by client IP. The tested Remnanode mode uses:
 
-```text
-user>>>IDENTIFIER>>>traffic>>>uplink
-user>>>IDENTIFIER>>>traffic>>>downlink
-```
+- Remnawave Panel API: `/api/users`
+- Remnanode runtime Xray API: `REMNAWAVE_API_INBOUND` on `127.0.0.1:61000`
+- TLS/gRPC helper inside the `remnanode` container
 
-Then it compares local traffic on the current node with user limits fetched from the **Remnawave Panel API**. When the limit is exceeded, the daemon removes the user from selected Xray inbound tags on this node by using Xray `HandlerService`.
-
-## What problem it solves
-
-Remnawave can have a global user/subscription traffic limit. This program adds a separate local rule:
-
-```text
-One user can spend no more than N GB on one specific node.
-```
-
-Changing IP address does not reset anything, because the counter is tied to the Xray user identifier, not to the source IP.
-
-## Requirements
-
-On the node:
-
-- Linux with systemd
-- Python 3
-- Xray binary with API command support
-- Xray API enabled locally
-- Remnawave Panel API token
-
-## Required Xray config profile fragment
-
-The node's Xray config/profile must expose `StatsService` and `HandlerService`:
-
-```json
-{
-  "api": {
-    "tag": "api",
-    "listen": "127.0.0.1:10085",
-    "services": [
-      "HandlerService",
-      "StatsService"
-    ]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true,
-      "statsOutboundUplink": true,
-      "statsOutboundDownlink": true
-    }
-  }
-}
-```
-
-Check that Xray exposes user stats:
-
-```bash
-xray api statsquery --server=127.0.0.1:10085 -pattern "user>>>"
-```
-
-## Interactive installation from GitHub
-
-Replace `YOUR_GITHUB_USER` and `YOUR_REPO` with your repository.
+## Install
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/vitabled/shaper/main/install.sh)
 ```
 
-Or clone manually:
+The installer asks for:
+
+- Remnanode container name, default `remnanode`
+- Remnawave Panel URL and API token
+- inbound tags to block, for example `VLESS_TCP_REALITY-SEL-RU-1`
+- quota period
+- default limit
+- local HTTP API settings
+
+## Test
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USER/YOUR_REPO.git
-cd YOUR_REPO
-sudo ./install.sh
+/opt/remna-node-quota/venv/bin/python -m remna_node_quota \
+  -c /etc/remna-node-quota/config.json \
+  --once \
+  --log-level DEBUG
 ```
 
-## Configuration
-
-The installer writes:
+Expected log:
 
 ```text
-/etc/remna-node-quota/config.json
+Remnawave API page=1 raw users parsed: ...
+Remnawave users build result: users=... identifiers=...
+Fetched Xray stats for ... users; managed identifiers=...
+user=18 period=... used=... limit=...
 ```
 
-Example:
-
-```json
-{
-  "xray_bin": "/usr/local/bin/xray",
-  "xray_api_server": "127.0.0.1:10085",
-  "poll_interval_sec": 20,
-  "db_path": "/var/lib/remna-node-quota/quota.db",
-  "period": "month",
-  "dry_run": true,
-  "inbound_tags": [
-    "VLESS_TCP_REALITY",
-    "VLESS_XHTTP"
-  ],
-  "remnawave": {
-    "enabled": true,
-    "base_url": "https://panel.example.com",
-    "token": "PASTE_REMNAWAVE_API_TOKEN_HERE",
-    "users_endpoint": "/api/users",
-    "page_limit": 100,
-    "refresh_interval_sec": 300,
-    "timeout_sec": 20,
-    "verify_tls": true,
-    "status_allowlist": ["ACTIVE"],
-    "id_fields": [
-      "uuid",
-      "shortUuid",
-      "username",
-      "email",
-      "subscriptionUuid"
-    ],
-    "limit_fields": [
-      "dataLimitBytes",
-      "trafficLimitBytes",
-      "usedTrafficBytesLimit",
-      "trafficLimit",
-      "dataLimit"
-    ],
-    "limit_multiplier": 1.0,
-    "default_limit_bytes": 0,
-    "fallback_to_local_users": false
-  },
-  "default_limit_bytes": 0,
-  "users": {}
-}
-```
-
-### Important fields
-
-- `dry_run: true` — only logs actions, does not remove users.
-- `dry_run: false` — actually removes exceeded users from Xray inbound tags.
-- `period` — `day`, `week`, `month`, or `forever`.
-- `inbound_tags` — inbound tags from which exceeded users will be removed.
-- `remnawave.base_url` — your panel URL.
-- `remnawave.token` — Bearer token for panel API.
-- `remnawave.id_fields` — fields used to match Remnawave users with Xray stats identifiers.
-- `remnawave.limit_fields` — fields used to read the traffic limit from the panel response.
-
-## Test run
+## Service
 
 ```bash
-/opt/remna-node-quota/venv/bin/python -m remna_node_quota -c /etc/remna-node-quota/config.json --once
-```
-
-## Service management
-
-```bash
-systemctl status remna-node-quota
-systemctl restart remna-node-quota
+systemctl enable --now remna-node-quota
 journalctl -u remna-node-quota -f
 ```
 
-## Disable dry-run
+## Local HTTP API
 
-After checking logs and matching identifiers:
-
-```bash
-nano /etc/remna-node-quota/config.json
-```
-
-Change:
-
-```json
-"dry_run": true
-```
-
-To:
-
-```json
-"dry_run": false
-```
-
-Then restart:
+By default it listens on `127.0.0.1:8765`.
 
 ```bash
-systemctl restart remna-node-quota
+TOKEN='CHANGE_ME_LOCAL_API_TOKEN'
+
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/status
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/users
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/counters
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/blocked
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/enforce
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/users/18/block
+curl -X POST -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8765/api/v1/users/18/reset?period_key=2026-05-03'
 ```
 
-## How blocking works
+Keep the HTTP API bound to `127.0.0.1` unless you put it behind your own authenticated reverse proxy or firewall.
 
-When a user exceeds the local quota for the current period, the daemon runs commands equivalent to:
+## Notes
+
+The installer prepares the Alpine-based `remnanode` container with:
 
 ```bash
-xray api rmu --server=127.0.0.1:10085 --tag=INBOUND_TAG --email=USER_IDENTIFIER
+apk add --no-cache python3 py3-grpcio py3-protobuf
 ```
 
-If Remnawave later re-syncs the user back into Xray, the daemon sees that the user is already marked as blocked in SQLite and removes the user again.
-
-## Data storage
-
-SQLite database:
-
-```text
-/var/lib/remna-node-quota/quota.db
-```
-
-It stores:
-
-- current period counters
-- last seen Xray totals
-- blocked users for the period
-
-## Uninstall
-
-```bash
-sudo /opt/remna-node-quota/scripts/uninstall.sh
-```
-
-The uninstall script keeps config and database by default:
-
-```text
-/etc/remna-node-quota
-/var/lib/remna-node-quota
-```
+The systemd unit also runs `--prepare-container` before startup, so dependencies are restored after container recreation.

@@ -1,49 +1,54 @@
 {
   "xray_bin": "/usr/local/bin/xray",
-  "xray_api_server": "127.0.0.1:10085",
+  "xray_runner": {
+    "mode": "docker_grpc_exec",
+    "container": "remnanode",
+    "python": "python3",
+    "auto_install_deps": true
+  },
+  "xray_api_server": "127.0.0.1:61000",
   "poll_interval_sec": 20,
   "db_path": "/var/lib/remna-node-quota/quota.db",
-  "period": "month",
+  "period": "day",
   "dry_run": true,
-
   "inbound_tags": [
-    "VLESS_TCP_REALITY",
-    "VLESS_XHTTP"
+    "VLESS_TCP_REALITY-SEL-RU-1"
   ],
-
   "remnawave": {
     "enabled": true,
-    "base_url": "https://panel.example.com",
+    "base_url": "https://remnapanel.example.com",
     "token": "PASTE_REMNAWAVE_API_TOKEN_HERE",
     "users_endpoint": "/api/users",
     "page_limit": 100,
     "refresh_interval_sec": 300,
     "timeout_sec": 20,
     "verify_tls": true,
-
-    "status_allowlist": ["ACTIVE"],
-
+    "status_allowlist": [
+      "ACTIVE"
+    ],
     "id_fields": [
+      "id",
       "uuid",
       "shortUuid",
       "username",
       "email",
-      "subscriptionUuid"
+      "vlessUuid",
+      "trojanPassword",
+      "ssPassword"
     ],
-
     "limit_fields": [
-      "dataLimitBytes",
-      "trafficLimitBytes",
-      "usedTrafficBytesLimit",
-      "trafficLimit",
-      "dataLimit"
+      "trafficLimitBytes"
     ],
-
     "limit_multiplier": 1.0,
-    "default_limit_bytes": 0,
+    "default_limit_bytes": 10737418240,
     "fallback_to_local_users": false
   },
-
-  "default_limit_bytes": 0,
+  "api": {
+    "enabled": true,
+    "listen": "127.0.0.1",
+    "port": 8765,
+    "token": "CHANGE_ME_LOCAL_API_TOKEN"
+  },
+  "default_limit_bytes": 10737418240,
   "users": {}
 }
