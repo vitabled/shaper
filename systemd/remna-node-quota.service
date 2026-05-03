@@ -1,0 +1,24 @@
+[Unit]
+Description=Remnawave per-node user traffic quota enforcer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/remna-node-quota/venv/bin/python -m remna_node_quota -c /etc/remna-node-quota/config.json
+Restart=always
+RestartSec=5
+WorkingDirectory=/opt/remna-node-quota
+
+# Basic hardening. Keep root because xray api binary/socket access may require it on some nodes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/remna-node-quota /etc/remna-node-quota
+
+[Install]
+WantedBy=multi-user.target

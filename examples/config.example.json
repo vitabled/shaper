@@ -1,0 +1,49 @@
+{
+  "xray_bin": "/usr/local/bin/xray",
+  "xray_api_server": "127.0.0.1:10085",
+  "poll_interval_sec": 20,
+  "db_path": "/var/lib/remna-node-quota/quota.db",
+  "period": "month",
+  "dry_run": true,
+
+  "inbound_tags": [
+    "VLESS_TCP_REALITY",
+    "VLESS_XHTTP"
+  ],
+
+  "remnawave": {
+    "enabled": true,
+    "base_url": "https://panel.example.com",
+    "token": "PASTE_REMNAWAVE_API_TOKEN_HERE",
+    "users_endpoint": "/api/users",
+    "page_limit": 100,
+    "refresh_interval_sec": 300,
+    "timeout_sec": 20,
+    "verify_tls": true,
+
+    "status_allowlist": ["ACTIVE"],
+
+    "id_fields": [
+      "uuid",
+      "shortUuid",
+      "username",
+      "email",
+      "subscriptionUuid"
+    ],
+
+    "limit_fields": [
+      "dataLimitBytes",
+      "trafficLimitBytes",
+      "usedTrafficBytesLimit",
+      "trafficLimit",
+      "dataLimit"
+    ],
+
+    "limit_multiplier": 1.0,
+    "default_limit_bytes": 0,
+    "fallback_to_local_users": false
+  },
+
+  "default_limit_bytes": 0,
+  "users": {}
+}
