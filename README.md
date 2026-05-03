@@ -1,76 +1,131 @@
 # remna-node-quota / shaper
 
-Per-node overlay quota for Remnawave nodes.
+Локальный ограничитель трафика для Remnawave-ноды. Remnawave Panel используется как источник пользователей, а фактический трафик берётся из Xray/rw-core Stats API внутри контейнера `remnanode`.
 
-The program uses Remnawave Panel API only to receive the list of users and their identifiers. The actual quota is local and applies only on the node where this program is installed.
+## Идея
 
-Example:
+Пример: в Remnawave у всех пользователей общий лимит 500 GiB/day. На конкретной ноде можно поставить отдельный локальный лимит 10 GiB/day. Тогда пользователь сохраняет общий лимит Remnawave, но на этой ноде будет ограничен локальным лимитом.
 
-- Remnawave global limit: 500 GB/day for every user.
-- This program on a selected node: 10 GiB/day.
-- Result: users keep their 500 GB/day globally, but on this node they are limited to 10 GiB/day.
+## Возможности
 
-## Install
+- несколько inbound на одной ноде;
+- разные глобальные лимиты для разных inbound;
+- индивидуальный лимит для пользователя на всей ноде;
+- индивидуальный лимит для пользователя на конкретном inbound;
+- локальный HTTP API;
+- смена API-токена через API;
+- dry-run режим для проверки без блокировок;
+- Remnanode TLS/gRPC helper для доступа к `rw-core` API на `127.0.0.1:61000`.
+
+## Важный нюанс учёта
+
+Xray Stats API в текущей схеме отдаёт счётчик вида `user>>>ID>>>traffic>>>uplink/downlink`, то есть агрегированный счётчик пользователя. Поэтому программа умеет применять разные лимиты и удалять пользователя из конкретных inbound, но фактический счётчик трафика общий для пользователя внутри core. Для полностью независимого учёта байтов по каждому inbound нужны разные идентификаторы пользователя на разных inbound, отдельные core-процессы или отдельный источник per-inbound логов.
+
+## Установка
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/vitabled/shaper/main/install.sh)
 ```
 
-## Key config options
+Установщик спросит:
 
-```json
-"period": "day",
-"per_node_limit_bytes": 10737418240,
-"dry_run": true,
-"remnawave": {
-  "use_panel_traffic_limit": false,
-  "id_fields": ["id", "uuid", "shortUuid", "username", "email", "vlessUuid"]
-}
-```
+- имя контейнера Remnanode;
+- URL панели Remnawave;
+- API token Remnawave;
+- список inbound через запятую;
+- общий или индивидуальный глобальный лимит для каждого inbound;
+- включать ли локальный HTTP API;
+- слушать API только локально или во внешнюю сеть.
 
-`use_panel_traffic_limit` is intentionally `false` by default. This makes the program enforce the same local node quota for every active user from Remnawave.
+## API-авторизация
 
-## Remnanode support
-
-Default mode is TLS/gRPC through the internal Remnawave API inbound:
-
-```json
-"xray_runner": {
-  "mode": "docker_grpc_exec",
-  "container": "remnanode",
-  "python": "python3"
-},
-"xray_api_server": "127.0.0.1:61000"
-```
-
-The helper reads the internal Remnanode runtime config and connects to `REMNAWAVE_API_INBOUND` using the generated TLS material and SNI.
-
-## Local API
-
-The API listens on `127.0.0.1:8765` by default.
+API использует Bearer token:
 
 ```bash
-TOKEN=$(python3 - <<'PY'
-import json
-c=json.load(open('/etc/remna-node-quota/config.json'))
-print(c.get('api',{}).get('token',''))
-PY
-)
-
+TOKEN='TOKEN_FROM_/etc/remna-node-quota/config.json'
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/status
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/users
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/counters
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/blocked
-curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/enforce
-curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/users/18/block
-curl -X POST -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8765/api/v1/users/18/reset?period_key=2026-05-03'
 ```
 
-## Service
+Если API открыт во внешнюю сеть, используй HTTPS reverse proxy, firewall или VPN. Без HTTPS Bearer-token передаётся в открытом виде.
+
+## API endpoints
+
+### Статус
 
 ```bash
-systemctl enable --now remna-node-quota
-journalctl -u remna-node-quota -f
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/status
 ```
 
-Keep `dry_run=true` until you verify that `used` grows and the limit is the local per-node limit, for example `10.00 GiB`, not the Remnawave global limit.
+### Все пользователи и лимиты
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8765/api/v1/users?refresh=1'
+```
+
+### Глобальные лимиты ноды/inbound
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/node/limits
+```
+
+### Изменить глобальный лимит inbound
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"limit_gib": 20}' \
+  http://127.0.0.1:8765/api/v1/inbounds/VLESS_TCP_REALITY-SEL-RU-1/limit
+```
+
+### Изменить лимит пользователя на всей ноде
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"limit_gib": 5}' \
+  http://127.0.0.1:8765/api/v1/users/18/limit
+```
+
+### Удалить индивидуальный лимит пользователя на всей ноде
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8765/api/v1/users/18/limit
+```
+
+### Изменить лимит пользователя на конкретном inbound
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"limit_gib": 2}' \
+  http://127.0.0.1:8765/api/v1/users/18/inbounds/VLESS_TCP_REALITY-SEL-RU-1/limit
+```
+
+### Удалить индивидуальный лимит пользователя на inbound
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8765/api/v1/users/18/inbounds/VLESS_TCP_REALITY-SEL-RU-1/limit
+```
+
+### Сменить API token
+
+Указать вручную:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"token":"NEW_LONG_TOKEN_VALUE"}' \
+  http://127.0.0.1:8765/api/v1/api-token
+```
+
+Сгенерировать новый и вернуть в ответе:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"generate":true,"return_token":true}' \
+  http://127.0.0.1:8765/api/v1/api-token
+```
+
+### Ручной запуск проверки
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/enforce
+```

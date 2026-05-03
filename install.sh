@@ -151,25 +151,24 @@ PY
 write_config(){
   local config_file="${CONFIG_DIR}/config.json"
   log "Interactive configuration"
-  local xray_api_server panel_url panel_token users_endpoint inbound_tags_raw period poll_interval refresh_interval dry_run verify_tls status_allowlist_raw per_node_limit_gb per_node_limit_bytes api_enabled api_token container_name
+  local xray_api_server panel_url panel_token users_endpoint inbound_tags_raw period poll_interval refresh_interval dry_run verify_tls status_allowlist_raw per_node_limit_gb per_node_limit_bytes api_enabled api_token api_listen container_name inbound_limits_raw same_limit
 
   container_name="$(ask "Remnanode container name" "remnanode")"
   xray_api_server="$(ask "Remnanode internal Xray API server" "127.0.0.1:61000")"
   panel_url="$(ask "Remnawave Panel URL" "https://panel.example.com")"; panel_url="${panel_url%/}"
   panel_token="$(ask_secret "Remnawave API Bearer token")"
   users_endpoint="$(ask "Remnawave users endpoint" "/api/users")"
-  inbound_tags_raw="$(ask "Inbound tags to block, comma-separated" "VLESS_TCP_REALITY-SEL-RU-1")"
+  inbound_tags_raw="$(ask "Inbound tags to enforce, comma-separated" "VLESS_TCP_REALITY-SEL-RU-1")"
   period="$(ask "Quota period: day, week, month, forever" "day")"
-  per_node_limit_gb="$(ask "Per-node overlay limit in GB for every active Remnawave user" "10")"
+  per_node_limit_gb="$(ask "Default per-node limit in GiB for every active Remnawave user" "10")"
   poll_interval="$(ask "Xray stats polling interval in seconds" "20")"
   refresh_interval="$(ask "Remnawave users refresh interval in seconds" "300")"
 
   if ask_yes_no "Enable dry-run mode? Recommended for first launch" "y"; then dry_run="true"; else dry_run="false"; fi
   if ask_yes_no "Verify Remnawave Panel TLS certificate?" "y"; then verify_tls="true"; else verify_tls="false"; fi
   status_allowlist_raw="$(ask "Allowed user statuses, comma-separated. Empty disables status filter" "ACTIVE")"
-  if ask_yes_no "Enable local HTTP API?" "y"; then api_enabled="true"; else api_enabled="false"; fi
-  api_token="$(ask_secret "Local API bearer token. Leave empty to auto-generate")"
-  [[ -n "$api_token" ]] || api_token="$(random_token)"
+
+  if ask_yes_no "Use the same global limit for all configured inbounds?" "y"; then same_limit="true"; else same_limit="false"; fi
 
   per_node_limit_bytes="$(PER_NODE_LIMIT_GB="$per_node_limit_gb" python3 - <<'PY'
 from decimal import Decimal
@@ -178,8 +177,36 @@ print(int(Decimal(os.environ['PER_NODE_LIMIT_GB']) * Decimal(1024) * Decimal(102
 PY
 )"
 
+  inbound_limits_raw=""
+  IFS=',' read -ra _inbound_arr <<< "$inbound_tags_raw"
+  for _tag in "${_inbound_arr[@]}"; do
+    _tag="$(printf '%s' "$_tag" | xargs)"
+    [[ -n "$_tag" ]] || continue
+    if [[ "$same_limit" == "true" ]]; then
+      _limit_bytes="$per_node_limit_bytes"
+    else
+      _limit_gb="$(ask "Limit in GiB for inbound ${_tag}" "$per_node_limit_gb")"
+      _limit_bytes="$(PER_NODE_LIMIT_GB="$_limit_gb" python3 - <<'PY'
+from decimal import Decimal
+import os
+print(int(Decimal(os.environ['PER_NODE_LIMIT_GB']) * Decimal(1024) * Decimal(1024) * Decimal(1024)))
+PY
+)"
+    fi
+    inbound_limits_raw+="${_tag}=${_limit_bytes}"$'\n'
+  done
+
+  if ask_yes_no "Enable local HTTP API?" "y"; then api_enabled="true"; else api_enabled="false"; fi
+  if [[ "$api_enabled" == "true" ]]; then
+    if ask_yes_no "Expose API to external network? Use only with firewall/VPN/HTTPS proxy" "n"; then api_listen="0.0.0.0"; else api_listen="127.0.0.1"; fi
+  else
+    api_listen="127.0.0.1"
+  fi
+  api_token="$(ask_secret "Local API bearer token. Leave empty to auto-generate")"
+  [[ -n "$api_token" ]] || api_token="$(random_token)"
+
   mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
-  CONFIG_FILE="$config_file" XRAY_API_SERVER="$xray_api_server" CONTAINER_NAME="$container_name" POLL_INTERVAL="$poll_interval" PERIOD="$period" DRY_RUN="$dry_run" INBOUND_TAGS_RAW="$inbound_tags_raw" PANEL_URL="$panel_url" PANEL_TOKEN="$panel_token" USERS_ENDPOINT="$users_endpoint" REFRESH_INTERVAL="$refresh_interval" VERIFY_TLS="$verify_tls" STATUS_ALLOWLIST_RAW="$status_allowlist_raw" PER_NODE_LIMIT_BYTES="$per_node_limit_bytes" API_ENABLED="$api_enabled" API_TOKEN="$api_token" python3 <<'PY'
+  CONFIG_FILE="$config_file" XRAY_API_SERVER="$xray_api_server" CONTAINER_NAME="$container_name" POLL_INTERVAL="$poll_interval" PERIOD="$period" DRY_RUN="$dry_run" INBOUND_TAGS_RAW="$inbound_tags_raw" INBOUND_LIMITS_RAW="$inbound_limits_raw" PANEL_URL="$panel_url" PANEL_TOKEN="$panel_token" USERS_ENDPOINT="$users_endpoint" REFRESH_INTERVAL="$refresh_interval" VERIFY_TLS="$verify_tls" STATUS_ALLOWLIST_RAW="$status_allowlist_raw" PER_NODE_LIMIT_BYTES="$per_node_limit_bytes" API_ENABLED="$api_enabled" API_LISTEN="$api_listen" API_TOKEN="$api_token" python3 <<'PY'
 import json, os
 
 def split_csv(v):
@@ -187,6 +214,20 @@ def split_csv(v):
 
 def parse_bool(v):
     return str(v).lower() in ('1','true','yes','y','on')
+
+def parse_inbounds(raw, default_limit):
+    result = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or '=' not in line:
+            continue
+        tag, limit = line.split('=', 1)
+        tag = tag.strip()
+        if tag:
+            result[tag] = {"limit_bytes": int(limit.strip()), "enabled": True}
+    if not result:
+        result = {tag: {"limit_bytes": default_limit, "enabled": True} for tag in split_csv(os.environ["INBOUND_TAGS_RAW"])}
+    return result
 
 config = {
   "xray_bin": "/usr/local/bin/xray",
@@ -196,8 +237,9 @@ config = {
   "db_path": "/var/lib/remna-node-quota/quota.db",
   "period": os.environ["PERIOD"],
   "dry_run": parse_bool(os.environ["DRY_RUN"]),
+  "usage_scope": "user_total_shared_across_inbounds",
   "per_node_limit_bytes": int(os.environ["PER_NODE_LIMIT_BYTES"]),
-  "inbound_tags": split_csv(os.environ["INBOUND_TAGS_RAW"]),
+  "inbounds": parse_inbounds(os.environ.get("INBOUND_LIMITS_RAW", ""), int(os.environ["PER_NODE_LIMIT_BYTES"])),
   "remnawave": {
     "enabled": True,
     "base_url": os.environ["PANEL_URL"],
@@ -215,7 +257,7 @@ config = {
   },
   "api": {
     "enabled": parse_bool(os.environ["API_ENABLED"]),
-    "listen": "127.0.0.1",
+    "listen": os.environ.get("API_LISTEN", "127.0.0.1"),
     "port": 8765,
     "token": os.environ["API_TOKEN"].strip()
   },

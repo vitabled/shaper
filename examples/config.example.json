@@ -10,10 +10,18 @@
   "db_path": "/var/lib/remna-node-quota/quota.db",
   "period": "day",
   "dry_run": true,
+  "usage_scope": "user_total_shared_across_inbounds",
   "per_node_limit_bytes": 10737418240,
-  "inbound_tags": [
-    "VLESS_TCP_REALITY-SEL-RU-1"
-  ],
+  "inbounds": {
+    "VLESS_TCP_REALITY-SEL-RU-1": {
+      "limit_bytes": 10737418240,
+      "enabled": true
+    },
+    "VLESS_XHTTP-SEL-RU-1": {
+      "limit_bytes": 5368709120,
+      "enabled": true
+    }
+  },
   "remnawave": {
     "enabled": true,
     "base_url": "https://panel.example.com",
@@ -37,7 +45,6 @@
       "ssPassword"
     ],
     "use_panel_traffic_limit": false,
-    "per_node_limit_bytes": 10737418240,
     "fallback_to_local_users": false
   },
   "api": {
