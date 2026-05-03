@@ -18,35 +18,23 @@ from google.protobuf import message_factory
 def build_pool() -> descriptor_pool.DescriptorPool:
     pool = descriptor_pool.DescriptorPool()
 
-    empty_file = descriptor_pb2.FileDescriptorProto()
-    empty_file.name = "google/protobuf/empty.proto"
-    empty_file.package = "google.protobuf"
-    empty_file.syntax = "proto3"
-    msg = empty_file.message_type.add()
-    msg.name = "Empty"
-    pool.Add(empty_file)
-
     stats_file = descriptor_pb2.FileDescriptorProto()
     stats_file.name = "app/stats/command/command.proto"
     stats_file.package = "xray.app.stats.command"
     stats_file.syntax = "proto3"
 
-    stat = stats_file.message_type.add()
-    stat.name = "Stat"
-    f = stat.field.add(); f.name = "name"; f.number = 1; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-    f = stat.field.add(); f.name = "value"; f.number = 2; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_INT64
+    stat = stats_file.message_type.add(); stat.name = "Stat"
+    f = stat.field.add(); f.name = "name"; f.number = 1; f.label = 1; f.type = 9
+    f = stat.field.add(); f.name = "value"; f.number = 2; f.label = 1; f.type = 3
 
-    qreq = stats_file.message_type.add()
-    qreq.name = "QueryStatsRequest"
-    f = qreq.field.add(); f.name = "pattern"; f.number = 1; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-    f = qreq.field.add(); f.name = "reset"; f.number = 2; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_BOOL
+    qreq = stats_file.message_type.add(); qreq.name = "QueryStatsRequest"
+    f = qreq.field.add(); f.name = "pattern"; f.number = 1; f.label = 1; f.type = 9
+    f = qreq.field.add(); f.name = "reset"; f.number = 2; f.label = 1; f.type = 8
 
-    qresp = stats_file.message_type.add()
-    qresp.name = "QueryStatsResponse"
-    f = qresp.field.add(); f.name = "stat"; f.number = 1; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_REPEATED; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE; f.type_name = ".xray.app.stats.command.Stat"
+    qresp = stats_file.message_type.add(); qresp.name = "QueryStatsResponse"
+    f = qresp.field.add(); f.name = "stat"; f.number = 1; f.label = 3; f.type = 11; f.type_name = ".xray.app.stats.command.Stat"
 
-    svc = stats_file.service.add()
-    svc.name = "StatsService"
+    svc = stats_file.service.add(); svc.name = "StatsService"
     m = svc.method.add(); m.name = "QueryStats"; m.input_type = ".xray.app.stats.command.QueryStatsRequest"; m.output_type = ".xray.app.stats.command.QueryStatsResponse"
     pool.Add(stats_file)
 
@@ -55,23 +43,17 @@ def build_pool() -> descriptor_pool.DescriptorPool:
     proxyman_file.package = "xray.app.proxyman.command"
     proxyman_file.syntax = "proto3"
 
-    remove_user = proxyman_file.message_type.add()
-    remove_user.name = "RemoveUserOperation"
-    f = remove_user.field.add(); f.name = "email"; f.number = 1; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+    remove_user = proxyman_file.message_type.add(); remove_user.name = "RemoveUserOperation"
+    f = remove_user.field.add(); f.name = "email"; f.number = 1; f.label = 1; f.type = 9
 
-    alter_req = proxyman_file.message_type.add()
-    alter_req.name = "AlterInboundRequest"
-    f = alter_req.field.add(); f.name = "tag"; f.number = 1; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-    f = alter_req.field.add(); f.name = "operation"; f.number = 2; f.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL; f.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE; f.type_name = ".xray.app.proxyman.command.RemoveUserOperation"
+    alter_req = proxyman_file.message_type.add(); alter_req.name = "AlterInboundRequest"
+    f = alter_req.field.add(); f.name = "tag"; f.number = 1; f.label = 1; f.type = 9
+    f = alter_req.field.add(); f.name = "operation"; f.number = 2; f.label = 1; f.type = 11; f.type_name = ".xray.app.proxyman.command.RemoveUserOperation"
 
-    alter_resp = proxyman_file.message_type.add()
-    alter_resp.name = "AlterInboundResponse"
-
-    svc = proxyman_file.service.add()
-    svc.name = "HandlerService"
+    alter_resp = proxyman_file.message_type.add(); alter_resp.name = "AlterInboundResponse"
+    svc = proxyman_file.service.add(); svc.name = "HandlerService"
     m = svc.method.add(); m.name = "AlterInbound"; m.input_type = ".xray.app.proxyman.command.AlterInboundRequest"; m.output_type = ".xray.app.proxyman.command.AlterInboundResponse"
     pool.Add(proxyman_file)
-
     return pool
 
 
@@ -93,12 +75,10 @@ def read_runtime_config() -> Dict[str, Any]:
             pids.append((name, cmd))
     if not pids:
         raise RuntimeError("rw-core process with http+unix config was not found")
-
     cmd = pids[0][1]
     match = re.search(r"-config\s+(http\+unix://[^ ]+)", cmd)
     if not match:
         raise RuntimeError(f"config url not found in rw-core cmdline: {cmd}")
-
     cfg = match.group(1)
     rest = cfg.replace("http+unix://", "")
     sock_path = rest.split(".sock", 1)[0] + ".sock"
@@ -131,10 +111,7 @@ def pem_lines_to_bytes(lines: Any) -> Optional[bytes]:
 
 def find_api_tls_material(config: Dict[str, Any]) -> Tuple[Optional[bytes], Optional[bytes], Optional[bytes], str]:
     server_name = "internal.remnawave.local"
-    root_cert = None
-    client_cert = None
-    client_key = None
-
+    root_cert = client_cert = client_key = None
     for inbound in config.get("inbounds", []) or []:
         if inbound.get("tag") != "REMNAWAVE_API_INBOUND":
             continue

@@ -13,15 +13,14 @@ import subprocess
 import sys
 import threading
 import time
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 try:
     import requests
-except ImportError:  # pragma: no cover
+except ImportError:
     requests = None
 
 LOG = logging.getLogger("remna-node-quota")
@@ -79,10 +78,8 @@ def parse_limit_to_bytes(value: Any, multiplier: float = 1.0) -> int:
         unit = m.group(2).lower()
         factors = {
             "": 1, "b": 1,
-            "k": 1000, "kb": 1000,
-            "m": 1000**2, "mb": 1000**2,
-            "g": 1000**3, "gb": 1000**3,
-            "t": 1000**4, "tb": 1000**4,
+            "k": 1000, "kb": 1000, "m": 1000**2, "mb": 1000**2,
+            "g": 1000**3, "gb": 1000**3, "t": 1000**4, "tb": 1000**4,
             "p": 1000**5, "pb": 1000**5,
             "kib": 1024, "mib": 1024**2, "gib": 1024**3,
             "tib": 1024**4, "pib": 1024**5,
@@ -106,11 +103,9 @@ def deep_find_user_list(payload: Any) -> List[dict]:
         return [x for x in payload if isinstance(x, dict)]
     if not isinstance(payload, dict):
         return []
-
     response = payload.get("response")
     if isinstance(response, dict) and isinstance(response.get("users"), list):
         return [x for x in response["users"] if isinstance(x, dict)]
-
     for key in ("users", "items", "data", "records", "result", "response", "rows"):
         value = payload.get(key)
         if isinstance(value, list):
@@ -140,8 +135,7 @@ class QuotaDB:
 
     def init(self) -> None:
         with self.lock:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS counters (
                     user_id TEXT NOT NULL,
                     period_key TEXT NOT NULL,
@@ -150,10 +144,8 @@ class QuotaDB:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, period_key)
                 )
-                """
-            )
-            self.conn.execute(
-                """
+            """)
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS blocked_users (
                     user_id TEXT NOT NULL,
                     period_key TEXT NOT NULL,
@@ -163,8 +155,7 @@ class QuotaDB:
                     reason TEXT NOT NULL,
                     PRIMARY KEY (user_id, period_key)
                 )
-                """
-            )
+            """)
             self.conn.commit()
 
     def update_usage_from_xray_total(self, user_id: str, pkey: str, xray_total: int) -> int:
@@ -204,44 +195,27 @@ class QuotaDB:
 
     def mark_blocked(self, user_id: str, pkey: str, limit_bytes: int, used_bytes: int, reason: str) -> None:
         with self.lock:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT OR REPLACE INTO blocked_users(user_id,period_key,limit_bytes,used_bytes,blocked_at,reason)
                 VALUES(?,?,?,?,?,?)
-                """,
-                (user_id, pkey, int(limit_bytes), int(used_bytes), now_utc().isoformat(), reason),
-            )
+            """, (user_id, pkey, int(limit_bytes), int(used_bytes), now_utc().isoformat(), reason))
             self.conn.commit()
 
-    def list_counters(self, pkey: Optional[str] = None, limit: int = 200) -> List[dict]:
+    def list_counters(self, limit: int = 500) -> List[dict]:
         with self.lock:
-            if pkey:
-                rows = self.conn.execute(
-                    "SELECT * FROM counters WHERE period_key=? ORDER BY used_bytes DESC LIMIT ?",
-                    (pkey, int(limit)),
-                ).fetchall()
-            else:
-                rows = self.conn.execute(
-                    "SELECT * FROM counters ORDER BY updated_at DESC LIMIT ?",
-                    (int(limit),),
-                ).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM counters ORDER BY updated_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
             return [dict(r) for r in rows]
 
-    def list_blocked(self, pkey: Optional[str] = None, limit: int = 200) -> List[dict]:
+    def list_blocked(self, limit: int = 500) -> List[dict]:
         with self.lock:
-            if pkey:
-                rows = self.conn.execute(
-                    "SELECT * FROM blocked_users WHERE period_key=? ORDER BY blocked_at DESC LIMIT ?",
-                    (pkey, int(limit)),
-                ).fetchall()
-            else:
-                rows = self.conn.execute(
-                    "SELECT * FROM blocked_users ORDER BY blocked_at DESC LIMIT ?",
-                    (int(limit),),
-                ).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM blocked_users ORDER BY blocked_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
             return [dict(r) for r in rows]
 
-    def reset_counter(self, user_id: str, pkey: str) -> None:
+    def reset_user(self, user_id: str, pkey: str) -> None:
         with self.lock:
             self.conn.execute("DELETE FROM counters WHERE user_id=? AND period_key=?", (user_id, pkey))
             self.conn.execute("DELETE FROM blocked_users WHERE user_id=? AND period_key=?", (user_id, pkey))
@@ -255,73 +229,38 @@ class XrayApi:
         self.server = cfg.get("xray_api_server", "127.0.0.1:61000")
         self.dry_run = bool(cfg.get("dry_run", True))
         self.runner = cfg.get("xray_runner", {}) or {}
-        self._prepared = False
-        self._prepare_lock = threading.Lock()
 
     def _helper_path(self) -> str:
         return str(Path(__file__).with_name("xray_grpc_helper.py"))
-
-    def prepare_container(self) -> None:
-        mode = self.runner.get("mode", "local")
-        if mode != "docker_grpc_exec":
-            return
-        with self._prepare_lock:
-            if self._prepared:
-                return
-            container = self.runner.get("container", "remnanode")
-            helper = self._helper_path()
-            py = self.runner.get("python", "python3")
-            auto_install = bool(self.runner.get("auto_install_deps", True))
-            if auto_install:
-                check = (
-                    f"{py} - <<'PY'\n"
-                    "import grpc, google.protobuf\n"
-                    "print('grpc/protobuf OK')\n"
-                    "PY"
-                )
-                proc = subprocess.run(["docker", "exec", "-i", container, "sh", "-lc", check], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-                if proc.returncode != 0:
-                    LOG.warning("grpc/protobuf are missing in container %s; installing via apk", container)
-                    install = subprocess.run(
-                        ["docker", "exec", container, "sh", "-lc", "apk add --no-cache python3 py3-grpcio py3-protobuf"],
-                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                    )
-                    if install.returncode != 0:
-                        raise RuntimeError(f"failed to install grpc deps in container: {install.stderr.strip() or install.stdout.strip()}")
-            cp = subprocess.run(["docker", "cp", helper, f"{container}:/tmp/xray_grpc_helper.py"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            if cp.returncode != 0:
-                raise RuntimeError(f"failed to copy grpc helper into container: {cp.stderr.strip() or cp.stdout.strip()}")
-            self._prepared = True
 
     def _run_grpc_helper(self, args: List[str]) -> subprocess.CompletedProcess:
         mode = self.runner.get("mode", "local")
         helper = self._helper_path()
         if mode == "docker_grpc_exec":
-            self.prepare_container()
             container = self.runner.get("container", "remnanode")
             py = self.runner.get("python", "python3")
+            cp = subprocess.run(["docker", "cp", helper, f"{container}:/tmp/xray_grpc_helper.py"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if cp.returncode != 0:
+                return cp
             cmd = ["docker", "exec", container, py, "/tmp/xray_grpc_helper.py", *args]
         else:
             cmd = [sys.executable, helper, *args]
         LOG.debug("Run gRPC helper: %s", " ".join(cmd))
         return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
-    def _build_cli_cmd(self, args: List[str]) -> List[str]:
+    def _run_cli(self, args: List[str]) -> subprocess.CompletedProcess:
         mode = self.runner.get("mode", "local")
         if mode == "docker_exec":
             container = self.runner.get("container", "remnanode")
             binary = self.runner.get("bin", "rw-core")
-            return ["docker", "exec", container, binary, "api", *args, f"--server={self.server}"]
-        return [self.xray_bin, "api", *args, f"--server={self.server}"]
-
-    def _run_cli(self, args: List[str]) -> subprocess.CompletedProcess:
-        cmd = self._build_cli_cmd(args)
+            cmd = ["docker", "exec", container, binary, "api", *args, f"--server={self.server}"]
+        else:
+            cmd = [self.xray_bin, "api", *args, f"--server={self.server}"]
         LOG.debug("Run command: %s", " ".join(cmd))
         return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
     def stats(self) -> Dict[str, int]:
-        mode = self.runner.get("mode", "local")
-        if mode == "docker_grpc_exec":
+        if self.runner.get("mode") == "docker_grpc_exec":
             proc = self._run_grpc_helper(["stats", self.server, "user>>>"])
         else:
             proc = self._run_cli(["statsquery", "-pattern", "user>>>"])
@@ -351,8 +290,7 @@ class XrayApi:
         if self.dry_run:
             LOG.warning("DRY-RUN: would remove user=%s from inbound=%s", user_id, inbound_tag)
             return True
-        mode = self.runner.get("mode", "local")
-        if mode == "docker_grpc_exec":
+        if self.runner.get("mode") == "docker_grpc_exec":
             proc = self._run_grpc_helper(["rmu", self.server, inbound_tag, user_id])
         else:
             proc = self._run_cli(["rmu", f"--tag={inbound_tag}", f"--email={user_id}"])
@@ -375,11 +313,14 @@ class RemnawaveClient:
         self.timeout = int(cfg.get("timeout_sec", 20))
         self.verify_tls = bool(cfg.get("verify_tls", True))
         self.id_fields = list(cfg.get("id_fields", ["id", "uuid", "shortUuid", "username", "email", "vlessUuid", "trojanPassword", "ssPassword"]))
-        self.limit_fields = list(cfg.get("limit_fields", ["trafficLimitBytes"]))
         self.status_allowlist = {str(x).upper() for x in cfg.get("status_allowlist", [])}
+        # Important: by default Remnawave limits are NOT used as quota.
+        # Remnawave API is used as a source of users/identifiers only.
+        self.use_panel_traffic_limit = bool(cfg.get("use_panel_traffic_limit", False))
+        self.limit_fields = list(cfg.get("limit_fields", ["trafficLimitBytes"]))
         self.limit_multiplier = float(cfg.get("limit_multiplier", 1.0))
+        self.per_node_limit_bytes = int(cfg.get("per_node_limit_bytes", 0) or 0)
         self.default_limit_bytes = int(cfg.get("default_limit_bytes", 0) or 0)
-        self.last_raw_users: List[dict] = []
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}", "Accept": "application/json", "User-Agent": "remna-node-quota/0.4.0"}
@@ -420,7 +361,6 @@ class RemnawaveClient:
             all_items.extend(items)
             if not self._has_next(payload, page, len(items)):
                 break
-        self.last_raw_users = all_items
         return all_items
 
     def build_managed_users(self) -> Dict[str, ManagedUser]:
@@ -447,22 +387,28 @@ class RemnawaveClient:
             if not identifiers:
                 skipped_no_identifier += 1
                 continue
-            limit = 0
-            for field in self.limit_fields:
-                limit = parse_limit_to_bytes(deep_get(user, field), self.limit_multiplier)
-                if limit > 0:
-                    break
-            if limit <= 0:
-                limit = self.default_limit_bytes
+
+            if self.use_panel_traffic_limit:
+                limit = 0
+                for field in self.limit_fields:
+                    limit = parse_limit_to_bytes(deep_get(user, field), self.limit_multiplier)
+                    if limit > 0:
+                        break
+                if limit <= 0:
+                    limit = self.default_limit_bytes
+            else:
+                limit = self.per_node_limit_bytes
+
             if limit <= 0:
                 skipped_no_limit += 1
                 continue
             mu = ManagedUser(identifiers=identifiers, limit_bytes=limit, raw=user)
-            for identifier in identifiers:
-                result[identifier] = mu
+            for ident in identifiers:
+                result[ident] = mu
         LOG.info(
-            "Remnawave users build result: users=%s identifiers=%s skipped_by_status=%s skipped_no_identifier=%s skipped_no_limit=%s",
+            "Remnawave users build result: users=%s identifiers=%s skipped_by_status=%s skipped_no_identifier=%s skipped_no_limit=%s limit_source=%s per_node_limit=%s",
             len(users), len(result), skipped_by_status, skipped_no_identifier, skipped_no_limit,
+            "panel" if self.use_panel_traffic_limit else "local_per_node", bytes_human(self.per_node_limit_bytes),
         )
         return result
 
@@ -472,26 +418,27 @@ class QuotaDaemon:
         self.cfg = cfg
         self.db = QuotaDB(cfg.get("db_path", "/var/lib/remna-node-quota/quota.db"))
         self.xray = XrayApi(cfg)
-        self.period = cfg.get("period", "month")
+        self.period = cfg.get("period", "day")
         self.inbound_tags = list(cfg.get("inbound_tags", []))
         self.poll_interval = int(cfg.get("poll_interval_sec", 20))
+        self.per_node_limit_bytes = int(cfg.get("per_node_limit_bytes", 0) or 0)
         self.local_users = cfg.get("users", {}) or {}
-        self.remna_cfg = cfg.get("remnawave", {}) or {}
-        self.remna_client: Optional[RemnawaveClient] = RemnawaveClient(self.remna_cfg) if bool(self.remna_cfg.get("enabled", False)) else None
+        self.remna_cfg = dict(cfg.get("remnawave", {}) or {})
+        if "per_node_limit_bytes" not in self.remna_cfg:
+            self.remna_cfg["per_node_limit_bytes"] = self.per_node_limit_bytes
+        self.remna_enabled = bool(self.remna_cfg.get("enabled", False))
+        self.remna_client: Optional[RemnawaveClient] = RemnawaveClient(self.remna_cfg) if self.remna_enabled else None
         self.remna_cache: Dict[str, ManagedUser] = {}
         self.remna_last_refresh = 0.0
         self.remna_refresh_interval = int(self.remna_cfg.get("refresh_interval_sec", 300))
-        self.state_lock = threading.Lock()
-        self.last_enforce_at: Optional[str] = None
-        self.last_error: Optional[str] = None
-        self.last_stats_count = 0
-        self.last_managed_count = 0
-        self.last_matched_count = 0
+        self.last_enforce: Dict[str, Any] = {"ok": None, "at": None, "error": None}
 
     def refresh_managed_users_if_needed(self, force: bool = False) -> Dict[str, ManagedUser]:
         managed: Dict[str, ManagedUser] = {}
         for user_id, data in self.local_users.items():
             limit = parse_limit_to_bytes(data.get("limit_bytes", 0) if isinstance(data, dict) else data)
+            if limit <= 0:
+                limit = self.per_node_limit_bytes
             if limit > 0:
                 managed[str(user_id)] = ManagedUser([str(user_id)], limit, {"source": "local"})
         if self.remna_client:
@@ -508,214 +455,196 @@ class QuotaDaemon:
             managed.update(self.remna_cache)
         return managed
 
-    def enforce_once(self) -> dict:
+    def enforce_once(self) -> Dict[str, Any]:
         pkey = period_key(self.period)
-        managed = self.refresh_managed_users_if_needed()
-        if not managed:
-            LOG.warning("No managed users with positive limits. Nothing to enforce.")
-            with self.state_lock:
-                self.last_enforce_at = now_utc().isoformat()
-                self.last_managed_count = 0
-                self.last_stats_count = 0
-                self.last_matched_count = 0
-            return {"period_key": pkey, "managed": 0, "stats": 0, "matched": 0, "blocked": 0}
-        stats = self.xray.stats()
-        LOG.info("Fetched Xray stats for %d users; managed identifiers=%d", len(stats), len(managed))
-        blocked = 0
-        matched = 0
-        for user_id, xray_total in sorted(stats.items()):
-            mu = managed.get(user_id)
-            if not mu:
-                LOG.debug("Unmanaged Xray stats user: %s", user_id)
-                continue
-            matched += 1
-            used = self.db.update_usage_from_xray_total(user_id, pkey, xray_total)
-            LOG.info("user=%s period=%s used=%s limit=%s", user_id, pkey, bytes_human(used), bytes_human(mu.limit_bytes))
-            if used < mu.limit_bytes:
-                continue
-            if self.db.is_blocked(user_id, pkey):
-                LOG.warning("user=%s already marked blocked for period=%s; enforcing again", user_id, pkey)
-            else:
-                LOG.warning("quota exceeded: user=%s period=%s used=%s limit=%s", user_id, pkey, used, mu.limit_bytes)
-                self.db.mark_blocked(user_id, pkey, mu.limit_bytes, used, "quota_exceeded")
-                blocked += 1
-            for tag in self.inbound_tags:
-                self.xray.remove_user(tag, user_id)
-        if stats and matched == 0:
-            LOG.warning("No Xray stats users matched Remnawave identifiers. Check id_fields.")
-        with self.state_lock:
-            self.last_enforce_at = now_utc().isoformat()
-            self.last_error = None
-            self.last_stats_count = len(stats)
-            self.last_managed_count = len(managed)
-            self.last_matched_count = matched
-        return {"period_key": pkey, "managed": len(managed), "stats": len(stats), "matched": matched, "blocked": blocked}
+        result: Dict[str, Any] = {"period_key": pkey, "matched": 0, "blocked": 0, "stats_users": 0, "managed_identifiers": 0}
+        try:
+            managed = self.refresh_managed_users_if_needed()
+            result["managed_identifiers"] = len(managed)
+            if not managed:
+                LOG.warning("No managed users with positive per-node limits. Nothing to enforce.")
+                result.update({"ok": True, "warning": "no_managed_users"})
+                return result
+            stats = self.xray.stats()
+            result["stats_users"] = len(stats)
+            LOG.info("Fetched Xray stats for %d users; managed identifiers=%d", len(stats), len(managed))
+            if not stats:
+                LOG.warning("Xray stats returned zero users. Check active traffic and stats policy.")
+                result.update({"ok": True, "warning": "no_xray_stats"})
+                return result
+            for user_id, xray_total in sorted(stats.items()):
+                mu = managed.get(user_id)
+                if not mu:
+                    LOG.debug("Unmanaged Xray stats user: %s", user_id)
+                    continue
+                result["matched"] += 1
+                used = self.db.update_usage_from_xray_total(user_id, pkey, xray_total)
+                LOG.info("user=%s period=%s used=%s limit=%s", user_id, pkey, bytes_human(used), bytes_human(mu.limit_bytes))
+                if used < mu.limit_bytes:
+                    continue
+                if not self.db.is_blocked(user_id, pkey):
+                    LOG.warning("quota exceeded: user=%s period=%s used=%s limit=%s", user_id, pkey, used, mu.limit_bytes)
+                    self.db.mark_blocked(user_id, pkey, mu.limit_bytes, used, "quota_exceeded")
+                else:
+                    LOG.warning("user=%s already marked blocked for period=%s; enforcing again", user_id, pkey)
+                for tag in self.inbound_tags:
+                    if self.xray.remove_user(tag, user_id):
+                        result["blocked"] += 1
+            if result["matched"] == 0:
+                LOG.warning("No Xray stats users matched Remnawave identifiers. Check id_fields.")
+            result["ok"] = True
+            return result
+        except Exception as exc:
+            result.update({"ok": False, "error": str(exc)})
+            raise
+        finally:
+            result["at"] = now_utc().isoformat()
+            self.last_enforce = result
 
-    def get_status(self) -> dict:
-        with self.state_lock:
-            return {
-                "ok": self.last_error is None,
-                "dry_run": bool(self.cfg.get("dry_run", True)),
-                "period": self.period,
-                "period_key": period_key(self.period),
-                "inbound_tags": self.inbound_tags,
-                "last_enforce_at": self.last_enforce_at,
-                "last_error": self.last_error,
-                "last_stats_count": self.last_stats_count,
-                "last_managed_count": self.last_managed_count,
-                "last_matched_count": self.last_matched_count,
-                "remnawave_cache_identifiers": len(self.remna_cache),
-            }
-
-    def list_managed_users(self, limit: int = 500) -> List[dict]:
-        managed = self.refresh_managed_users_if_needed()
-        out = []
-        seen = set()
-        for ident, mu in managed.items():
-            key = tuple(mu.identifiers)
-            if key in seen:
-                continue
-            seen.add(key)
-            raw = mu.raw or {}
-            out.append({
-                "identifiers": mu.identifiers,
-                "limit_bytes": mu.limit_bytes,
-                "limit_human": bytes_human(mu.limit_bytes),
-                "id": raw.get("id"),
-                "username": raw.get("username"),
-                "status": raw.get("status"),
-            })
-            if len(out) >= limit:
-                break
-        return out
-
-    def force_block(self, user_id: str) -> dict:
+    def block_user(self, user_id: str) -> Dict[str, Any]:
         ok = []
         for tag in self.inbound_tags:
             ok.append({"tag": tag, "ok": self.xray.remove_user(tag, user_id)})
-        self.db.mark_blocked(user_id, period_key(self.period), 0, 0, "manual_api_block")
         return {"user_id": user_id, "results": ok}
 
     def run_forever(self) -> None:
-        self.xray.prepare_container()
-        if bool((self.cfg.get("api") or {}).get("enabled", False)):
-            start_api_server(self)
         self.refresh_managed_users_if_needed(force=True)
         while True:
             try:
                 self.enforce_once()
             except Exception as exc:
                 LOG.exception("Iteration failed: %s", exc)
-                with self.state_lock:
-                    self.last_error = str(exc)
             time.sleep(self.poll_interval)
 
 
 class ApiHandler(BaseHTTPRequestHandler):
-    daemon_ref: QuotaDaemon
-    api_token: str = ""
+    daemon_ref: QuotaDaemon = None  # type: ignore
+    token: str = ""
 
     def log_message(self, fmt: str, *args: Any) -> None:
         LOG.debug("api: " + fmt, *args)
 
-    def _send(self, status: int, data: Any) -> None:
-        body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
+    def _auth_ok(self) -> bool:
+        if not self.token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        return auth == f"Bearer {self.token}"
+
+    def _send(self, code: int, payload: Any) -> None:
+        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _auth_ok(self) -> bool:
-        if not self.api_token:
-            return True
-        auth = self.headers.get("Authorization", "")
-        return auth == f"Bearer {self.api_token}"
-
     def _require_auth(self) -> bool:
         if not self._auth_ok():
-            self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            self._send(401, {"ok": False, "error": "unauthorized"})
             return False
         return True
 
     def do_GET(self) -> None:
         if not self._require_auth():
             return
+        d = self.daemon_ref
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
-        pkey = qs.get("period_key", [period_key(self.daemon_ref.period)])[0]
-        limit = int(qs.get("limit", ["200"])[0])
-        if parsed.path in ("/health", "/api/v1/health"):
-            self._send(200, {"ok": True})
-        elif parsed.path in ("/status", "/api/v1/status"):
-            self._send(200, self.daemon_ref.get_status())
-        elif parsed.path == "/api/v1/users":
-            self._send(200, {"users": self.daemon_ref.list_managed_users(limit=limit)})
-        elif parsed.path == "/api/v1/counters":
-            self._send(200, {"period_key": pkey, "counters": self.daemon_ref.db.list_counters(pkey, limit=limit)})
-        elif parsed.path == "/api/v1/blocked":
-            self._send(200, {"period_key": pkey, "blocked": self.daemon_ref.db.list_blocked(pkey, limit=limit)})
-        else:
-            self._send(404, {"error": "not found"})
+        try:
+            if parsed.path == "/api/v1/status":
+                self._send(200, {"ok": True, "dry_run": d.xray.dry_run, "period": d.period, "per_node_limit_bytes": d.per_node_limit_bytes, "per_node_limit": bytes_human(d.per_node_limit_bytes), "inbound_tags": d.inbound_tags, "remnawave_cache_identifiers": len(d.remna_cache), "last_enforce": d.last_enforce})
+            elif parsed.path == "/api/v1/users":
+                users = d.refresh_managed_users_if_needed(force=qs.get("refresh", ["0"])[0] in ("1", "true", "yes"))
+                self._send(200, {"ok": True, "count": len(users), "users": [{"identifier": k, "limit_bytes": v.limit_bytes, "limit": bytes_human(v.limit_bytes)} for k, v in sorted(users.items())]})
+            elif parsed.path == "/api/v1/counters":
+                self._send(200, {"ok": True, "counters": d.db.list_counters(int(qs.get("limit", [500])[0]))})
+            elif parsed.path == "/api/v1/blocked":
+                self._send(200, {"ok": True, "blocked": d.db.list_blocked(int(qs.get("limit", [500])[0]))})
+            else:
+                self._send(404, {"ok": False, "error": "not_found"})
+        except Exception as exc:
+            LOG.exception("API GET failed: %s", exc)
+            self._send(500, {"ok": False, "error": str(exc)})
 
     def do_POST(self) -> None:
         if not self._require_auth():
             return
+        d = self.daemon_ref
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
-        if parsed.path == "/api/v1/enforce":
-            try:
-                self._send(200, self.daemon_ref.enforce_once())
-            except Exception as exc:
-                LOG.exception("manual enforce failed: %s", exc)
-                self._send(500, {"error": str(exc)})
-            return
-        m = re.match(r"^/api/v1/users/([^/]+)/block$", parsed.path)
-        if m:
-            self._send(200, self.daemon_ref.force_block(m.group(1)))
-            return
-        m = re.match(r"^/api/v1/users/([^/]+)/reset$", parsed.path)
-        if m:
-            pkey = qs.get("period_key", [period_key(self.daemon_ref.period)])[0]
-            self.daemon_ref.db.reset_counter(m.group(1), pkey)
-            self._send(200, {"ok": True, "user_id": m.group(1), "period_key": pkey})
-            return
-        self._send(404, {"error": "not found"})
+        try:
+            if parsed.path == "/api/v1/enforce":
+                self._send(200, d.enforce_once())
+                return
+            m = re.match(r"^/api/v1/users/([^/]+)/block$", parsed.path)
+            if m:
+                self._send(200, {"ok": True, **d.block_user(m.group(1))})
+                return
+            m = re.match(r"^/api/v1/users/([^/]+)/reset$", parsed.path)
+            if m:
+                pkey = qs.get("period_key", [period_key(d.period)])[0]
+                d.db.reset_user(m.group(1), pkey)
+                self._send(200, {"ok": True, "user_id": m.group(1), "period_key": pkey})
+                return
+            self._send(404, {"ok": False, "error": "not_found"})
+        except Exception as exc:
+            LOG.exception("API POST failed: %s", exc)
+            self._send(500, {"ok": False, "error": str(exc)})
 
 
-def start_api_server(daemon: QuotaDaemon) -> None:
-    api_cfg = daemon.cfg.get("api") or {}
-    host = str(api_cfg.get("listen", "127.0.0.1"))
+def run_api_server(daemon: QuotaDaemon, cfg: dict) -> Optional[ThreadingHTTPServer]:
+    api_cfg = cfg.get("api", {}) or {}
+    if not bool(api_cfg.get("enabled", False)):
+        return None
+    listen = str(api_cfg.get("listen", "127.0.0.1"))
     port = int(api_cfg.get("port", 8765))
-    token = str(api_cfg.get("token", "")).strip()
     ApiHandler.daemon_ref = daemon
-    ApiHandler.api_token = token
-    server = ThreadingHTTPServer((host, port), ApiHandler)
-    thread = threading.Thread(target=server.serve_forever, name="quota-api", daemon=True)
-    thread.start()
-    LOG.info("HTTP API listening on http://%s:%s", host, port)
+    ApiHandler.token = str(api_cfg.get("token", ""))
+    server = ThreadingHTTPServer((listen, port), ApiHandler)
+    th = threading.Thread(target=server.serve_forever, daemon=True)
+    th.start()
+    LOG.info("Local API listening on http://%s:%s", listen, port)
+    return server
 
 
 def setup_logging(level: str) -> None:
     logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def prepare_container(cfg: dict) -> int:
+    runner = cfg.get("xray_runner", {}) or {}
+    if runner.get("mode") != "docker_grpc_exec":
+        LOG.info("xray_runner mode is not docker_grpc_exec; nothing to prepare")
+        return 0
+    container = runner.get("container", "remnanode")
+    cmd = ["docker", "exec", container, "sh", "-lc", "python3 - <<'PY'\nimport grpc, google.protobuf\nprint('grpc/protobuf OK')\nPY"]
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if proc.returncode == 0:
+        LOG.info("Container %s already has grpc/protobuf", container)
+        return 0
+    LOG.info("Installing grpc/protobuf into container %s", container)
+    proc = subprocess.run(["docker", "exec", container, "sh", "-lc", "apk add --no-cache py3-grpcio py3-protobuf"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if proc.returncode != 0:
+        LOG.error("Failed to prepare container: stdout=%s stderr=%s", proc.stdout, proc.stderr)
+    return proc.returncode
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Per-node Remnawave/Xray traffic quota enforcer")
     parser.add_argument("-c", "--config", default="/etc/remna-node-quota/config.json")
-    parser.add_argument("--once", action="store_true", help="Run one check and exit")
-    parser.add_argument("--prepare-container", action="store_true", help="Install/copy helper dependencies into remnanode container")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--prepare-container", action="store_true")
     parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
     args = parser.parse_args(argv)
     setup_logging(args.log_level)
     cfg = load_config(args.config)
-    daemon = QuotaDaemon(cfg)
     if args.prepare_container:
-        daemon.xray.prepare_container()
-        return 0
+        return prepare_container(cfg)
+    daemon = QuotaDaemon(cfg)
     if args.once:
         daemon.enforce_once()
         return 0
+    run_api_server(daemon, cfg)
     daemon.run_forever()
     return 0
 

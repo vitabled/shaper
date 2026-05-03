@@ -3,20 +3,20 @@
   "xray_runner": {
     "mode": "docker_grpc_exec",
     "container": "remnanode",
-    "python": "python3",
-    "auto_install_deps": true
+    "python": "python3"
   },
   "xray_api_server": "127.0.0.1:61000",
   "poll_interval_sec": 20,
   "db_path": "/var/lib/remna-node-quota/quota.db",
   "period": "day",
   "dry_run": true,
+  "per_node_limit_bytes": 10737418240,
   "inbound_tags": [
     "VLESS_TCP_REALITY-SEL-RU-1"
   ],
   "remnawave": {
     "enabled": true,
-    "base_url": "https://remnapanel.example.com",
+    "base_url": "https://panel.example.com",
     "token": "PASTE_REMNAWAVE_API_TOKEN_HERE",
     "users_endpoint": "/api/users",
     "page_limit": 100,
@@ -36,19 +36,15 @@
       "trojanPassword",
       "ssPassword"
     ],
-    "limit_fields": [
-      "trafficLimitBytes"
-    ],
-    "limit_multiplier": 1.0,
-    "default_limit_bytes": 10737418240,
+    "use_panel_traffic_limit": false,
+    "per_node_limit_bytes": 10737418240,
     "fallback_to_local_users": false
   },
   "api": {
     "enabled": true,
     "listen": "127.0.0.1",
     "port": 8765,
-    "token": "CHANGE_ME_LOCAL_API_TOKEN"
+    "token": "CHANGE_ME"
   },
-  "default_limit_bytes": 10737418240,
   "users": {}
 }
