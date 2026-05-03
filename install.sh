@@ -162,12 +162,25 @@ ensure_ufw_ipsets(){
   fi
 }
 
-install_os_dependencies(){
-  log "Installing OS dependencies"
-  ensure_ufw_ipsets
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates jq ipset rsync docker.io
-  ensure_ufw_ipsets
+install_os_dependencies() {
+    log "Installing OS dependencies"
+
+    ensure_ufw_ipsets
+
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        python3 \
+        python3-venv \
+        python3-pip \
+        curl \
+        ca-certificates \
+        jq \
+        ipset \
+        rsync
+
+    ensure_docker
+
+    ensure_ufw_ipsets
 }
 
 container_exists(){ docker ps --format '{{.Names}}' | grep -Fxq "$1"; }
